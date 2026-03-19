@@ -17,15 +17,16 @@
 #include "../core/FileIndex.hpp"
 #include "../core/FileStream.h"
 #include "../core/FlagHolder.hpp"
+#include "../core/Json.hpp"
 #include "../core/Path.hpp"
 #include "../core/String.hpp"
 #include "../localisation/LocalisationService.h"
 #include "../object/ObjectRepository.h"
 #include "../ride/RideData.h"
+#include "../world/Map.h"
+#include "TrackData.h"
 #include "TrackDesign.h"
-
-#include <memory>
-#include <vector>
+#include "ted/TrackElementDescriptor.h"
 
 using namespace OpenRCT2;
 
@@ -50,6 +51,143 @@ std::string GetNameFromTrackPath(const std::string& path)
     // The track name should be the file name until the first instance of a dot
     name = name.substr(0, name.find_first_of('.'));
     return name;
+}
+
+static std::string GetTrackDesignSource(const std::string& path, const std::vector<std::string>& searchPaths)
+{
+    if (searchPaths.size() > 0 && String::startsWith(path, searchPaths[0]))
+    {
+        return "rct1";
+    }
+    if (searchPaths.size() > 1 && String::startsWith(path, searchPaths[1]))
+    {
+        return "rct2";
+    }
+    return "user";
+}
+
+static void WriteTrackDesignJson(const TrackDesign& td, const std::string& path, const std::string& source)
+{
+    std::string name = GetNameFromTrackPath(path);
+
+    json_t root = json_t::object();
+
+    root["meta"] = {
+        { "source", source },
+        { "name", name },
+        { "path", path },
+        { "version", static_cast<int>(td.version) },
+    };
+
+    root["ride"] = {
+        { "rideType", td.trackAndVehicle.rtdIndex },
+        { "vehicleObjectIdentifier", td.trackAndVehicle.vehicleObject.GetName() },
+        { "numberOfTrains", td.trackAndVehicle.numberOfTrains },
+        { "numberOfCarsPerTrain", td.trackAndVehicle.numberOfCarsPerTrain },
+    };
+
+    root["operation"] = {
+        { "rideMode", static_cast<int>(td.operation.rideMode) },
+        { "liftHillSpeed", td.operation.liftHillSpeed },
+        { "numCircuits", td.operation.numCircuits },
+        { "operationSetting", td.operation.operationSetting },
+        { "departFlags", td.operation.departFlags },
+        { "minWaitingTime", td.operation.minWaitingTime },
+        { "maxWaitingTime", td.operation.maxWaitingTime },
+    };
+
+    root["appearance"] = {
+        { "trackColours", nullptr },
+        { "stationObjectIdentifier", td.appearance.stationObjectIdentifier },
+        { "vehicleColourSettings", static_cast<int>(td.appearance.vehicleColourSettings) },
+        { "vehicleColours", nullptr },
+    };
+
+    root["statistics"] = {
+        { "excitement", td.statistics.ratings.excitement },
+        { "intensity", td.statistics.ratings.intensity },
+        { "nausea", td.statistics.ratings.nausea },
+        { "maxSpeed", td.statistics.maxSpeed },
+        { "averageSpeed", td.statistics.averageSpeed },
+        { "rideLength", td.statistics.rideLength },
+        { "maxPositiveVerticalG", td.statistics.maxPositiveVerticalG },
+        { "maxNegativeVerticalG", td.statistics.maxNegativeVerticalG },
+        { "maxLateralG", td.statistics.maxLateralG },
+        { "totalAirTime", td.statistics.totalAirTime },
+        { "drops", td.statistics.drops },
+        { "highestDropHeight", td.statistics.highestDropHeight },
+        { "inversions", td.statistics.inversions },
+        { "holes", td.statistics.holes },
+        { "upkeepCost", td.statistics.upkeepCost },
+        { "spaceRequired", { td.statistics.spaceRequired.x, td.statistics.spaceRequired.y } },
+    };
+
+    json_t trackElements = json_t::array();
+    CoordsXYZ newCoords{ 0, 0, 0 };
+    uint8_t rotation = 0;
+    for (const auto& tdte : td.trackElements)
+    {
+        const auto& ted = TrackMetadata::GetTrackElementDescriptor(tdte.type);
+
+        json_t element = json_t::object();
+
+        // XYZD
+        element["x"] = newCoords.x;
+        element["y"] = newCoords.y;
+        element["z"] = newCoords.z - ted.coordinates.zBegin;
+        element["direction"] = rotation;
+
+        // TrackDesignTrackElement
+        element["trackType"] = static_cast<int>(tdte.type);
+        element["trackPlaceFlags"] = tdte.flags.holder;
+        element["hasChain"] = tdte.flags.has(TrackDesignTrackElementFlag::hasChain);
+        element["isInverted"] = tdte.flags.has(TrackDesignTrackElementFlag::isInverted);
+        element["colour"] = tdte.colourScheme;
+        element["stationIndex"] = tdte.stationIndex.ToUnderlying();
+        element["brakeSpeed"] = tdte.brakeBoosterSpeed;
+        element["seatRotation"] = tdte.seatRotation;
+
+        trackElements.push_back(element);
+
+        auto offsetAndRotatedTrack = CoordsXY{ newCoords } + CoordsXY{ ted.coordinates.x, ted.coordinates.y }.Rotate(rotation);
+        newCoords = { offsetAndRotatedTrack, newCoords.z - ted.coordinates.zBegin + ted.coordinates.zEnd };
+        rotation = (rotation + ted.coordinates.rotationEnd - ted.coordinates.rotationBegin) & 3;
+        if (ted.coordinates.rotationEnd & (1 << 2))
+        {
+            rotation |= (1 << 2);
+        }
+        else
+        {
+            newCoords += CoordsDirectionDelta[rotation];
+        }
+    }
+    root["trackElements"] = trackElements;
+
+    // json_t scenery = json_t::array();
+    // for (const auto& s : td.sceneryElements)
+    // {
+    //     scenery.push_back({ { "x", s.loc.x }, { "y", s.loc.y }, { "z", s.loc.z }, { "flags", s.flags } });
+    // }
+    // root["sceneryElements"] = scenery;
+
+    // json_t entrances = json_t::array();
+    // for (const auto& e : td.entranceElements)
+    // {
+    //     entrances.push_back({ { "x", e.location.x }, { "y", e.location.y }, { "z", e.location.z }, { "isExit", e.isExit } });
+    // }
+    // root["entranceElements"] = entrances;
+
+    // json_t maze = json_t::array();
+    // for (const auto& m : td.mazeElements)
+    // {
+    //     maze.push_back({ { "x", m.location.x }, { "y", m.location.y }, { "mazeEntry", m.mazeEntry } });
+    // }
+    // root["mazeElements"] = maze;
+
+    std::string outDir = Path::Combine("out", source);
+    Path::CreateDirectory(outDir);
+    std::string outPath = Path::Combine(outDir, name + ".json");
+    Json::WriteToFile(outPath, root);
 }
 
 class TrackDesignFileIndex final : public FileIndex<TrackRepositoryItem>
@@ -77,6 +215,11 @@ public:
         auto td = TrackDesignImport(path.c_str());
         if (td != nullptr)
         {
+            auto source = GetTrackDesignSource(path, SearchPaths);
+            std::cout << "Exporting track design \"" << GetNameFromTrackPath(path) << "\" from source " << source << " to JSON"
+                      << std::endl;
+            WriteTrackDesignJson(*td, path, source);
+
             TrackRepositoryItem item{};
             item.Name = GetNameFromTrackPath(path);
             item.Path = path;
@@ -203,7 +346,7 @@ public:
     void Scan(int32_t language) override
     {
         _items.clear();
-        auto trackDesigns = _fileIndex.LoadOrBuild(language);
+        auto trackDesigns = _fileIndex.Rebuild(language);
         for (const auto& td : trackDesigns)
         {
             _items.push_back(td);
