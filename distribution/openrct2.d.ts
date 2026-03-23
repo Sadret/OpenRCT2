@@ -2254,6 +2254,10 @@ declare global {
 
     }
 
+    interface FootpathSurfaceObject extends LoadedImageObject {
+        readonly flags: number;
+    }
+
     interface FootpathAdditionObject extends SceneryObject {
 
     }
@@ -5768,6 +5772,7 @@ declare global {
         getAllObjects(type: "small_scenery"): SmallSceneryObject[];
         getAllObjects(type: "large_scenery"): LargeSceneryObject[];
         getAllObjects(type: "wall"): WallObject[];
+        getAllObjects(type: "footpath_surface"): FootpathSurfaceObject[];
         getAllObjects(type: "footpath_addition"): FootpathAdditionObject[];
         getAllObjects(type: "banner"): BannerObject[];
         getAllObjects(type: "scenery_group"): SceneryGroupObject[];
